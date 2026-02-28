@@ -8,23 +8,16 @@
       "reauth_successful": "Reauthentication was successful.",
       "reconfigure_successful": "Reconfiguration was successful."
     },
-    "error": {
-      "invalid_auth": "Invalid email or password.",
-      "cannot_connect": "Failed to connect to Tado.",
-      "unknown": "Unexpected error occurred."
+    "progress": {
+      "wait_for_device": "To authenticate, open the following URL and login at Tado:\n{url}\nIf the code is not automatically copied, paste the following code to authorize the integration:\n\n{code}\n\nThe login attempt will time out after five minutes."
     },
     "step": {
-      "user": {
-        "title": "Authenticate with Tado",
-        "description": "Enter your Tado account credentials.",
-        "data": {
-          "username": "Email",
-          "password": "Password"
-        }
-      },
       "reauth_confirm": {
         "description": "You need to reauthenticate with Tado. Press Submit to start the authentication process.",
         "title": "Authenticate with Tado"
+      },
+      "timeout": {
+        "description": "The authentication process timed out. Please try again."
       }
     }
   },

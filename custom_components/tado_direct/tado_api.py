@@ -14,13 +14,13 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-# OAuth2 Configuration (from Tado Android app)
+# OAuth2 Configuration
 OAUTH_BASE_URL = "https://login.tado.com"
 API_BASE_URL = "https://my.tado.com/api/v2"
-CLIENT_ID = "eec8b609-9e2d-4403-9336-4f62a475271e"
-CLIENT_SECRET = "WzedWFdqrCqWD45EGCwgwXfdxtsAQGR4BfDsGrxwBcGG4tFebgg1gv3fGcFqGb4W"
-SCOPE = "home.user offline_access"
-REDIRECT_URI = "tado://oauth2redirect/tado"
+# Device authorization client (same as PyTado — supports device code grant)
+CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46"
+SCOPE = "offline_access"
+DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 # Token refresh buffer (refresh 30s before expiry)
 TOKEN_REFRESH_BUFFER = 30
@@ -324,7 +324,12 @@ class TadoDirectAPI:
         self._token_expiry: float = 0
         self._home_id: int | None = None
         self._auto_geofencing_supported: bool = False
-        self._use_legacy_auth: bool = False
+
+        # Device authorization flow state
+        self._device_code: str | None = None
+        self._user_code: str | None = None
+        self._verification_uri: str | None = None
+        self._device_poll_interval: int = 5
 
     @property
     def refresh_token(self) -> str | None:
@@ -348,70 +353,78 @@ class TadoDirectAPI:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-    # --- Password Grant Flow ---
+    # --- Device Authorization Flow ---
 
-    async def login_with_password(
-        self, username: str, password: str
-    ) -> None:
-        """Authenticate using username and password (Resource Owner Password Grant).
+    async def start_device_authorization(self) -> dict[str, str]:
+        """Initiate the OAuth2 device authorization flow.
 
-        Tries the new FusionAuth endpoint first (without client_secret, as it's
-        a public client), then falls back to the legacy auth.tado.com endpoint.
+        Returns dict with 'verification_uri_complete' and 'user_code'.
         """
         session = await self._ensure_session()
-
-        # Try new endpoint without client_secret (public client)
         data = {
             "client_id": CLIENT_ID,
-            "grant_type": "password",
-            "username": username,
-            "password": password,
             "scope": SCOPE,
+        }
+
+        async with session.post(
+            f"{OAUTH_BASE_URL}/oauth2/device_authorize",
+            data=data,
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise TadoAuthError(
+                    f"Device authorization failed ({resp.status}): {text}"
+                )
+            result = await resp.json()
+
+        self._device_code = result["device_code"]
+        self._user_code = result["user_code"]
+        self._verification_uri = result.get(
+            "verification_uri_complete", result.get("verification_uri", "")
+        )
+        self._device_poll_interval = result.get("interval", 5)
+
+        return {
+            "verification_uri_complete": self._verification_uri,
+            "user_code": self._user_code,
+        }
+
+    async def check_device_authorization(self) -> bool:
+        """Poll for device authorization completion.
+
+        Returns True if authorized, False if still pending.
+        """
+        if not self._device_code:
+            raise TadoAuthError("Device authorization not started")
+
+        session = await self._ensure_session()
+        data = {
+            "client_id": CLIENT_ID,
+            "device_code": self._device_code,
+            "grant_type": DEVICE_GRANT_TYPE,
         }
 
         async with session.post(
             f"{OAUTH_BASE_URL}/oauth2/token",
             data=data,
         ) as resp:
-            if resp.status == 200:
-                result = await resp.json()
+            result = await resp.json()
+
+            if resp.status == 200 and "access_token" in result:
                 self._access_token = result["access_token"]
                 self._refresh_token = result["refresh_token"]
                 self._token_expiry = time.time() + result.get("expires_in", 600)
-                return
-            text = await resp.text()
-            _LOGGER.debug(
-                "New endpoint password grant failed (%s): %s", resp.status, text
+                return True
+
+            error = result.get("error", "")
+            if error in ("authorization_pending", "slow_down"):
+                if error == "slow_down":
+                    self._device_poll_interval += 1
+                return False
+
+            raise TadoAuthError(
+                f"Device authorization failed: {result.get('error_description', error)}"
             )
-
-        # Fallback: legacy auth.tado.com endpoint (password grant supported)
-        self._use_legacy_auth = True
-        legacy_data = {
-            "client_id": "tado-mobile-app",
-            "grant_type": "password",
-            "username": username,
-            "password": password,
-            "scope": "home.user",
-        }
-
-        async with session.post(
-            "https://auth.tado.com/oauth/token",
-            data=legacy_data,
-        ) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                _LOGGER.debug(
-                    "Legacy endpoint password grant failed (%s): %s",
-                    resp.status, text,
-                )
-                raise TadoAuthError(
-                    f"Login failed ({resp.status}): {text}"
-                )
-            result = await resp.json()
-
-        self._access_token = result["access_token"]
-        self._refresh_token = result["refresh_token"]
-        self._token_expiry = time.time() + result.get("expires_in", 600)
 
     def get_refresh_token(self) -> str | None:
         """Return current refresh token."""
@@ -425,24 +438,15 @@ class TadoDirectAPI:
             raise TadoAuthError("No refresh token available")
 
         session = await self._ensure_session()
+        data = {
+            "client_id": CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": self._refresh_token,
+        }
 
-        if self._use_legacy_auth:
-            url = "https://auth.tado.com/oauth/token"
-            data = {
-                "client_id": "tado-mobile-app",
-                "grant_type": "refresh_token",
-                "refresh_token": self._refresh_token,
-                "scope": "home.user",
-            }
-        else:
-            url = f"{OAUTH_BASE_URL}/oauth2/token"
-            data = {
-                "client_id": CLIENT_ID,
-                "grant_type": "refresh_token",
-                "refresh_token": self._refresh_token,
-            }
-
-        async with session.post(url, data=data) as resp:
+        async with session.post(
+            f"{OAUTH_BASE_URL}/oauth2/token", data=data
+        ) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 raise TadoAuthError(f"Token refresh failed ({resp.status}): {text}")

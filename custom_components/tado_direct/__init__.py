@@ -19,7 +19,6 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     CONF_FALLBACK,
     CONF_REFRESH_TOKEN,
-    CONF_USE_LEGACY_AUTH,
     CONST_OVERLAY_MANUAL,
     CONST_OVERLAY_TADO_DEFAULT,
     CONST_OVERLAY_TADO_MODE,
@@ -70,7 +69,6 @@ async def async_setup_entry(
         session=session,
         refresh_token=entry.data[CONF_REFRESH_TOKEN],
     )
-    tado._use_legacy_auth = entry.data.get(CONF_USE_LEGACY_AUTH, False)
 
     try:
         # Validate the refresh token by attempting to get user info
