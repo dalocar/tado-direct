@@ -21,6 +21,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .const import (
     CONF_FALLBACK,
     CONF_REFRESH_TOKEN,
+    CONF_USE_LEGACY_AUTH,
     CONST_OVERLAY_TADO_DEFAULT,
     CONST_OVERLAY_TADO_OPTIONS,
     DOMAIN,
@@ -82,6 +83,7 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
                 unique_id = str(home["id"])
                 name = home["name"]
                 refresh_token = tado.get_refresh_token()
+                use_legacy = tado._use_legacy_auth
 
                 if self.source == SOURCE_REAUTH:
                     self._abort_if_unique_id_mismatch(
@@ -89,7 +91,10 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     return self.async_update_reload_and_abort(
                         self._get_reauth_entry(),
-                        data={CONF_REFRESH_TOKEN: refresh_token},
+                        data={
+                            CONF_REFRESH_TOKEN: refresh_token,
+                            CONF_USE_LEGACY_AUTH: use_legacy,
+                        },
                     )
 
                 await self.async_set_unique_id(unique_id)
@@ -97,7 +102,10 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 return self.async_create_entry(
                     title=name,
-                    data={CONF_REFRESH_TOKEN: refresh_token},
+                    data={
+                        CONF_REFRESH_TOKEN: refresh_token,
+                        CONF_USE_LEGACY_AUTH: use_legacy,
+                    },
                 )
 
             except TadoAuthError:

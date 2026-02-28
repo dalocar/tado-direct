@@ -324,6 +324,7 @@ class TadoDirectAPI:
         self._token_expiry: float = 0
         self._home_id: int | None = None
         self._auto_geofencing_supported: bool = False
+        self._use_legacy_auth: bool = False
 
     @property
     def refresh_token(self) -> str | None:
@@ -352,11 +353,16 @@ class TadoDirectAPI:
     async def login_with_password(
         self, username: str, password: str
     ) -> None:
-        """Authenticate using username and password (Resource Owner Password Grant)."""
+        """Authenticate using username and password (Resource Owner Password Grant).
+
+        Tries the new FusionAuth endpoint first (without client_secret, as it's
+        a public client), then falls back to the legacy auth.tado.com endpoint.
+        """
         session = await self._ensure_session()
+
+        # Try new endpoint without client_secret (public client)
         data = {
             "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
             "grant_type": "password",
             "username": username,
             "password": password,
@@ -367,9 +373,37 @@ class TadoDirectAPI:
             f"{OAUTH_BASE_URL}/oauth2/token",
             data=data,
         ) as resp:
+            if resp.status == 200:
+                result = await resp.json()
+                self._access_token = result["access_token"]
+                self._refresh_token = result["refresh_token"]
+                self._token_expiry = time.time() + result.get("expires_in", 600)
+                return
+            text = await resp.text()
+            _LOGGER.debug(
+                "New endpoint password grant failed (%s): %s", resp.status, text
+            )
+
+        # Fallback: legacy auth.tado.com endpoint (password grant supported)
+        self._use_legacy_auth = True
+        legacy_data = {
+            "client_id": "tado-mobile-app",
+            "grant_type": "password",
+            "username": username,
+            "password": password,
+            "scope": "home.user",
+        }
+
+        async with session.post(
+            "https://auth.tado.com/oauth/token",
+            data=legacy_data,
+        ) as resp:
             if resp.status != 200:
                 text = await resp.text()
-                _LOGGER.debug("Password grant failed (%s): %s", resp.status, text)
+                _LOGGER.debug(
+                    "Legacy endpoint password grant failed (%s): %s",
+                    resp.status, text,
+                )
                 raise TadoAuthError(
                     f"Login failed ({resp.status}): {text}"
                 )
@@ -391,16 +425,24 @@ class TadoDirectAPI:
             raise TadoAuthError("No refresh token available")
 
         session = await self._ensure_session()
-        data = {
-            "client_id": CLIENT_ID,
-            "grant_type": "refresh_token",
-            "refresh_token": self._refresh_token,
-        }
 
-        async with session.post(
-            f"{OAUTH_BASE_URL}/oauth2/token",
-            data=data,
-        ) as resp:
+        if self._use_legacy_auth:
+            url = "https://auth.tado.com/oauth/token"
+            data = {
+                "client_id": "tado-mobile-app",
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+                "scope": "home.user",
+            }
+        else:
+            url = f"{OAUTH_BASE_URL}/oauth2/token"
+            data = {
+                "client_id": CLIENT_ID,
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+            }
+
+        async with session.post(url, data=data) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 raise TadoAuthError(f"Token refresh failed ({resp.status}): {text}")
@@ -409,7 +451,6 @@ class TadoDirectAPI:
         self._access_token = result["access_token"]
         self._refresh_token = result["refresh_token"]
         self._token_expiry = time.time() + result.get("expires_in", 600)
-        self._activation_status = "COMPLETED"
 
     async def _ensure_token(self) -> str:
         """Ensure we have a valid access token, refreshing if needed."""
