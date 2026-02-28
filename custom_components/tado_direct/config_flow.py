@@ -125,8 +125,9 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
         unique_id = str(home["id"])
         name = home["name"]
 
+        # Always get the LATEST refresh token (may have been rotated during get_me)
         entry_data = {
-            CONF_REFRESH_TOKEN: self.refresh_token,
+            CONF_REFRESH_TOKEN: self.tado.get_refresh_token(),
             CONF_AUTH_CLIENT_ID: self.tado._auth_client_id,
         }
 

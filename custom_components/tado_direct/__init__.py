@@ -66,13 +66,22 @@ async def async_setup_entry(
     _LOGGER.debug("Setting up Tado Direct connection")
 
     session = async_get_clientsession(hass)
+    stored_refresh_token = entry.data[CONF_REFRESH_TOKEN]
+    auth_client_id = entry.data.get(CONF_AUTH_CLIENT_ID)
+
+    _LOGGER.debug(
+        "Setting up with client_id=%s, refresh_token=%s...",
+        auth_client_id,
+        stored_refresh_token[:20] if stored_refresh_token else "None",
+    )
+
     tado = TadoDirectAPI(
         session=session,
-        refresh_token=entry.data[CONF_REFRESH_TOKEN],
+        refresh_token=stored_refresh_token,
     )
     # Restore the auth client ID used during setup (for token refresh)
-    if CONF_AUTH_CLIENT_ID in entry.data:
-        tado._auth_client_id = entry.data[CONF_AUTH_CLIENT_ID]
+    if auth_client_id:
+        tado._auth_client_id = auth_client_id
 
     try:
         # Validate the refresh token by attempting to get user info
@@ -87,6 +96,15 @@ async def async_setup_entry(
         ) from err
 
     _LOGGER.debug("Tado Direct connection established")
+
+    # Persist updated refresh token if it was rotated during auth
+    new_refresh_token = tado.get_refresh_token()
+    if new_refresh_token and new_refresh_token != stored_refresh_token:
+        _LOGGER.debug("Refresh token was rotated, updating config entry")
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_REFRESH_TOKEN: new_refresh_token},
+        )
 
     coordinator = TadoDirectDataUpdateCoordinator(hass, entry, tado)
     await coordinator.async_config_entry_first_refresh()

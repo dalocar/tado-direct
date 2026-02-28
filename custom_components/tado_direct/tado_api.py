@@ -464,6 +464,11 @@ class TadoDirectAPI:
             raise TadoAuthError("No refresh token available")
 
         session = await self._ensure_session()
+        _LOGGER.debug(
+            "Refreshing token with client_id=%s, refresh_token=%s...",
+            self._auth_client_id,
+            self._refresh_token[:20] if self._refresh_token else "None",
+        )
         data = {
             "client_id": self._auth_client_id,
             "grant_type": "refresh_token",
@@ -481,6 +486,7 @@ class TadoDirectAPI:
         self._access_token = result["access_token"]
         self._refresh_token = result["refresh_token"]
         self._token_expiry = time.time() + result.get("expires_in", 600)
+        _LOGGER.debug("Token refreshed successfully")
 
     async def _ensure_token(self) -> str:
         """Ensure we have a valid access token, refreshing if needed."""
