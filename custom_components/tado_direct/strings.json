@@ -8,16 +8,20 @@
       "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]",
       "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
     },
-    "progress": {
-      "wait_for_device": "To authenticate, open the following URL and login at Tado:\n{url}\nIf the code is not automatically copied, paste the following code to authorize the integration:\n\n```{code}```\n\n\nThe login attempt will time out after five minutes."
+    "error": {
+      "invalid_auth": "Authentication failed. The URL may be invalid or expired. Please try again."
     },
     "step": {
+      "user": {
+        "title": "Authenticate with Tado",
+        "description": "To authenticate with Tado:\n1. Open [this link]({auth_url}) in your browser\n2. Log in with your Tado account\n3. After login, your browser will show an error page (it cannot open the `tado://` URL)\n4. Copy the **full URL** from your browser's address bar\n5. Paste it below and click Submit",
+        "data": {
+          "redirect_url": "Redirect URL"
+        }
+      },
       "reauth_confirm": {
         "description": "You need to reauthenticate with Tado. Press `Submit` to start the authentication process.",
         "title": "Authenticate with Tado"
-      },
-      "timeout": {
-        "description": "The authentication process timed out. Please try again."
       }
     }
   },

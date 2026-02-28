@@ -6,10 +6,13 @@ bypassing 3rd-party rate limits imposed on the python-tado library.
 
 from __future__ import annotations
 
-import asyncio
+import base64
+import hashlib
 import logging
+import secrets
 import time
 from typing import Any
+from urllib.parse import urlencode, urlparse, parse_qs
 
 import aiohttp
 
@@ -25,9 +28,6 @@ REDIRECT_URI = "tado://oauth2redirect/tado"
 
 # Token refresh buffer (refresh 30s before expiry)
 TOKEN_REFRESH_BUFFER = 30
-
-# Device authorization grant type
-DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 
 class TadoApiError(Exception):
@@ -329,13 +329,6 @@ class TadoDirectAPI:
         self._home_id: int | None = None
         self._auto_geofencing_supported: bool = False
 
-        # Device authorization flow state
-        self._device_code: str | None = None
-        self._verification_uri: str | None = None
-        self._user_code: str | None = None
-        self._device_poll_interval: int = 5
-        self._activation_status: str = "NOT_STARTED"
-
     @property
     def refresh_token(self) -> str | None:
         """Return current refresh token."""
@@ -358,97 +351,86 @@ class TadoDirectAPI:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-    # --- Device Authorization Flow ---
+    # --- Authorization Code + PKCE Flow ---
 
-    async def start_device_authorization(self) -> dict[str, str]:
-        """Initiate the OAuth2 device authorization flow.
+    @staticmethod
+    def generate_pkce_pair() -> tuple[str, str]:
+        """Generate PKCE code_verifier and code_challenge.
 
-        Returns dict with 'verification_uri_complete' and 'user_code'.
+        Returns (code_verifier, code_challenge).
         """
-        session = await self._ensure_session()
-        data = {
+        code_verifier = base64.urlsafe_b64encode(
+            secrets.token_bytes(32)
+        ).rstrip(b"=").decode("ascii")
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode("ascii")).digest()
+        ).rstrip(b"=").decode("ascii")
+        return code_verifier, code_challenge
+
+    @staticmethod
+    def get_authorization_url(code_challenge: str, state: str) -> str:
+        """Build the authorization URL for the PKCE flow."""
+        params = {
             "client_id": CLIENT_ID,
             "scope": SCOPE,
+            "state": state,
+            "redirect_uri": REDIRECT_URI,
+            "response_type": "code",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
         }
+        return f"{OAUTH_BASE_URL}/oauth2/authorize?{urlencode(params)}"
 
-        async with session.post(
-            f"{OAUTH_BASE_URL}/oauth2/device_authorize",
-            data=data,
-        ) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise TadoAuthError(
-                    f"Device authorization failed ({resp.status}): {text}"
-                )
-            result = await resp.json()
+    @staticmethod
+    def parse_authorization_response(redirect_url: str) -> tuple[str, str]:
+        """Extract code and state from the redirect URL.
 
-        self._device_code = result["device_code"]
-        self._user_code = result["user_code"]
-        self._verification_uri = result.get(
-            "verification_uri_complete", result.get("verification_uri", "")
-        )
-        self._device_poll_interval = result.get("interval", 5)
-        self._activation_status = "PENDING"
-
-        return {
-            "verification_uri_complete": self._verification_uri,
-            "user_code": self._user_code,
-        }
-
-    async def check_device_authorization(self) -> bool:
-        """Poll for device authorization completion.
-
-        Returns True if authorization is complete, False if still pending.
+        Returns (code, state).
+        Raises TadoAuthError if the URL is invalid or contains an error.
         """
-        if not self._device_code:
-            raise TadoAuthError("Device authorization not started")
+        parsed = urlparse(redirect_url.strip())
+        params = parse_qs(parsed.query)
 
+        error = params.get("error")
+        if error:
+            desc = params.get("error_description", ["Unknown error"])[0]
+            raise TadoAuthError(f"Authorization denied: {desc}")
+
+        code_list = params.get("code")
+        state_list = params.get("state")
+
+        if not code_list:
+            raise TadoAuthError("No authorization code found in the URL")
+
+        return code_list[0], (state_list[0] if state_list else "")
+
+    async def exchange_authorization_code(
+        self, code: str, code_verifier: str
+    ) -> None:
+        """Exchange an authorization code for access and refresh tokens."""
         session = await self._ensure_session()
         data = {
             "client_id": CLIENT_ID,
-            "device_code": self._device_code,
-            "grant_type": DEVICE_GRANT_TYPE,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+            "code_verifier": code_verifier,
         }
 
         async with session.post(
             f"{OAUTH_BASE_URL}/oauth2/token",
             data=data,
         ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise TadoAuthError(
+                    f"Token exchange failed ({resp.status}): {text}"
+                )
             result = await resp.json()
 
-            if resp.status == 200 and "access_token" in result:
-                self._access_token = result["access_token"]
-                self._refresh_token = result["refresh_token"]
-                self._token_expiry = time.time() + result.get("expires_in", 600)
-                self._activation_status = "COMPLETED"
-                return True
-
-            error = result.get("error", "")
-            if error in ("authorization_pending", "slow_down"):
-                if error == "slow_down":
-                    self._device_poll_interval += 1
-                return False
-
-            raise TadoAuthError(
-                f"Device authorization failed: {result.get('error_description', error)}"
-            )
-
-    async def wait_for_device_authorization(self, timeout: int = 300) -> None:
-        """Wait for device authorization to complete, polling at the required interval."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if await self.check_device_authorization():
-                return
-            await asyncio.sleep(self._device_poll_interval)
-        raise TadoAuthError("Device authorization timed out")
-
-    def device_verification_url(self) -> str:
-        """Return the device verification URL."""
-        return self._verification_uri or ""
-
-    def device_activation_status(self) -> str:
-        """Return current activation status: NOT_STARTED, PENDING, or COMPLETED."""
-        return self._activation_status
+        self._access_token = result["access_token"]
+        self._refresh_token = result["refresh_token"]
+        self._token_expiry = time.time() + result.get("expires_in", 600)
 
     def get_refresh_token(self) -> str | None:
         """Return current refresh token."""

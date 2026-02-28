@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import secrets
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
-from yarl import URL
 
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
@@ -17,7 +16,6 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
@@ -37,11 +35,11 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Tado Direct."""
 
     VERSION = 2
-    login_task: asyncio.Task | None = None
-    refresh_token: str | None = None
     tado: TadoDirectAPI | None = None
-    _verification_url: str | None = None
-    _user_code: str | None = None
+    refresh_token: str | None = None
+    _code_verifier: str | None = None
+    _state: str | None = None
+    _auth_url: str | None = None
 
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
@@ -61,56 +59,51 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Handle user step."""
+        """Handle user step — Authorization Code + PKCE flow."""
+        errors: dict[str, str] = {}
 
-        if self.tado is None:
-            _LOGGER.debug("Initiating device activation")
+        if user_input is not None:
+            redirect_url = user_input.get("redirect_url", "")
             try:
-                session = async_get_clientsession(self.hass)
-                self.tado = TadoDirectAPI(session=session)
-                result = await self.tado.start_device_authorization()
-                self._verification_url = result["verification_uri_complete"]
-                self._user_code = result["user_code"]
-            except (TadoAuthError, aiohttp.ClientError):
-                _LOGGER.exception("Error while initiating Tado Direct")
-                return self.async_abort(reason="cannot_connect")
+                code, state = TadoDirectAPI.parse_authorization_response(
+                    redirect_url
+                )
 
-        tado_device_url = self._verification_url
-        user_code = self._user_code
+                if state != self._state:
+                    errors["redirect_url"] = "invalid_auth"
+                else:
+                    session = async_get_clientsession(self.hass)
+                    self.tado = TadoDirectAPI(session=session)
+                    await self.tado.exchange_authorization_code(
+                        code, self._code_verifier
+                    )
+                    self.refresh_token = self.tado.get_refresh_token()
+                    return await self.async_step_finish_login()
 
-        async def _wait_for_login() -> None:
-            """Wait for the user to login."""
-            assert self.tado is not None
-            _LOGGER.debug("Waiting for device activation")
-            try:
-                await self.tado.wait_for_device_authorization(timeout=300)
-            except Exception as ex:
-                _LOGGER.exception("Error while waiting for device activation")
-                raise CannotConnect from ex
+            except TadoAuthError:
+                _LOGGER.exception("Authentication failed")
+                errors["redirect_url"] = "invalid_auth"
+            except Exception:
+                _LOGGER.exception("Error processing redirect URL")
+                errors["redirect_url"] = "invalid_auth"
 
-            if self.tado.device_activation_status() != "COMPLETED":
-                raise CannotConnect
+        # Generate PKCE pair and auth URL on first visit
+        if self._code_verifier is None:
+            self._code_verifier, code_challenge = (
+                TadoDirectAPI.generate_pkce_pair()
+            )
+            self._state = secrets.token_urlsafe(16)
+            self._auth_url = TadoDirectAPI.get_authorization_url(
+                code_challenge, self._state
+            )
 
-        _LOGGER.debug("Checking login task")
-        if self.login_task is None:
-            _LOGGER.debug("Creating task for device activation")
-            self.login_task = self.hass.async_create_task(_wait_for_login())
-
-        if self.login_task.done():
-            _LOGGER.debug("Login task is done, checking results")
-            if self.login_task.exception():
-                return self.async_show_progress_done(next_step_id="timeout")
-            self.refresh_token = self.tado.get_refresh_token()
-            return self.async_show_progress_done(next_step_id="finish_login")
-
-        return self.async_show_progress(
+        return self.async_show_form(
             step_id="user",
-            progress_action="wait_for_device",
-            description_placeholders={
-                "url": tado_device_url,
-                "code": user_code,
-            },
-            progress_task=self.login_task,
+            data_schema=vol.Schema(
+                {vol.Required("redirect_url"): str}
+            ),
+            description_placeholders={"auth_url": self._auth_url},
+            errors=errors,
         )
 
     async def async_step_finish_login(
@@ -144,18 +137,6 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
             data={CONF_REFRESH_TOKEN: self.refresh_token},
         )
 
-    async def async_step_timeout(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Handle issues that need transition await from progress step."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="timeout",
-            )
-        del self.login_task
-        return await self.async_step_user()
-
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -188,7 +169,3 @@ class OptionsFlowHandler(OptionsFlow):
             }
         )
         return self.async_show_form(step_id="init", data_schema=data_schema)
-
-
-class CannotConnect(HomeAssistantError):
-    """Error to indicate we cannot connect."""
