@@ -9,14 +9,17 @@
       "reconfigure_successful": "Reconfiguration was successful."
     },
     "error": {
-      "invalid_auth": "Authentication failed. The URL may be invalid or expired. Please try again."
+      "invalid_auth": "Invalid email or password.",
+      "cannot_connect": "Failed to connect to Tado.",
+      "unknown": "Unexpected error occurred."
     },
     "step": {
       "user": {
         "title": "Authenticate with Tado",
-        "description": "To authenticate with Tado:\n1. Copy and open this URL in your browser:\n{auth_url}\n2. Log in with your Tado account\n3. After login, your browser will show an error page (it cannot open the tado:// URL)\n4. Copy the full URL from your browser address bar (starts with tado://)\n5. Paste it below and click Submit",
+        "description": "Enter your Tado account credentials.",
         "data": {
-          "redirect_url": "Redirect URL"
+          "username": "Email",
+          "password": "Password"
         }
       },
       "reauth_confirm": {

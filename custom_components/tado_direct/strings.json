@@ -9,14 +9,17 @@
       "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
     },
     "error": {
-      "invalid_auth": "Authentication failed. The URL may be invalid or expired. Please try again."
+      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]",
+      "cannot_connect": "[%key:common::config_flow::error::cannot_connect%]",
+      "unknown": "[%key:common::config_flow::error::unknown%]"
     },
     "step": {
       "user": {
         "title": "Authenticate with Tado",
-        "description": "To authenticate with Tado:\n1. Copy and open this URL in your browser:\n{auth_url}\n2. Log in with your Tado account\n3. After login, your browser will show an error page (it cannot open the tado:// URL)\n4. Copy the full URL from your browser address bar (starts with tado://)\n5. Paste it below and click Submit",
+        "description": "Enter your Tado account credentials.",
         "data": {
-          "redirect_url": "Redirect URL"
+          "username": "[%key:common::config_flow::data::email%]",
+          "password": "[%key:common::config_flow::data::password%]"
         }
       },
       "reauth_confirm": {

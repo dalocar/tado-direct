@@ -6,13 +6,9 @@ bypassing 3rd-party rate limits imposed on the python-tado library.
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import logging
-import secrets
 import time
 from typing import Any
-from urllib.parse import urlencode, urlparse, parse_qs
 
 import aiohttp
 
@@ -351,70 +347,20 @@ class TadoDirectAPI:
         if self._owns_session and self._session and not self._session.closed:
             await self._session.close()
 
-    # --- Authorization Code + PKCE Flow ---
+    # --- Password Grant Flow ---
 
-    @staticmethod
-    def generate_pkce_pair() -> tuple[str, str]:
-        """Generate PKCE code_verifier and code_challenge.
-
-        Returns (code_verifier, code_challenge).
-        """
-        code_verifier = base64.urlsafe_b64encode(
-            secrets.token_bytes(32)
-        ).rstrip(b"=").decode("ascii")
-        code_challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode("ascii")).digest()
-        ).rstrip(b"=").decode("ascii")
-        return code_verifier, code_challenge
-
-    @staticmethod
-    def get_authorization_url(code_challenge: str, state: str) -> str:
-        """Build the authorization URL for the PKCE flow."""
-        params = {
-            "client_id": CLIENT_ID,
-            "scope": SCOPE,
-            "state": state,
-            "redirect_uri": REDIRECT_URI,
-            "response_type": "code",
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-        }
-        return f"{OAUTH_BASE_URL}/oauth2/authorize?{urlencode(params)}"
-
-    @staticmethod
-    def parse_authorization_response(redirect_url: str) -> tuple[str, str]:
-        """Extract code and state from the redirect URL.
-
-        Returns (code, state).
-        Raises TadoAuthError if the URL is invalid or contains an error.
-        """
-        parsed = urlparse(redirect_url.strip())
-        params = parse_qs(parsed.query)
-
-        error = params.get("error")
-        if error:
-            desc = params.get("error_description", ["Unknown error"])[0]
-            raise TadoAuthError(f"Authorization denied: {desc}")
-
-        code_list = params.get("code")
-        state_list = params.get("state")
-
-        if not code_list:
-            raise TadoAuthError("No authorization code found in the URL")
-
-        return code_list[0], (state_list[0] if state_list else "")
-
-    async def exchange_authorization_code(
-        self, code: str, code_verifier: str
+    async def login_with_password(
+        self, username: str, password: str
     ) -> None:
-        """Exchange an authorization code for access and refresh tokens."""
+        """Authenticate using username and password (Resource Owner Password Grant)."""
         session = await self._ensure_session()
         data = {
             "client_id": CLIENT_ID,
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": REDIRECT_URI,
-            "code_verifier": code_verifier,
+            "client_secret": CLIENT_SECRET,
+            "grant_type": "password",
+            "username": username,
+            "password": password,
+            "scope": SCOPE,
         }
 
         async with session.post(
@@ -423,8 +369,9 @@ class TadoDirectAPI:
         ) as resp:
             if resp.status != 200:
                 text = await resp.text()
+                _LOGGER.debug("Password grant failed (%s): %s", resp.status, text)
                 raise TadoAuthError(
-                    f"Token exchange failed ({resp.status}): {text}"
+                    f"Login failed ({resp.status}): {text}"
                 )
             result = await resp.json()
 
