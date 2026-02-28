@@ -20,6 +20,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_AUTH_CLIENT_ID,
     CONF_FALLBACK,
     CONF_REFRESH_TOKEN,
     CONST_OVERLAY_TADO_DEFAULT,
@@ -124,19 +125,24 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
         unique_id = str(home["id"])
         name = home["name"]
 
+        entry_data = {
+            CONF_REFRESH_TOKEN: self.refresh_token,
+            CONF_AUTH_CLIENT_ID: self.tado._auth_client_id,
+        }
+
         if self.source != SOURCE_REAUTH:
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
 
             return self.async_create_entry(
                 title=name,
-                data={CONF_REFRESH_TOKEN: self.refresh_token},
+                data=entry_data,
             )
 
         self._abort_if_unique_id_mismatch(reason="reauth_account_mismatch")
         return self.async_update_reload_and_abort(
             self._get_reauth_entry(),
-            data={CONF_REFRESH_TOKEN: self.refresh_token},
+            data=entry_data,
         )
 
     async def async_step_timeout(

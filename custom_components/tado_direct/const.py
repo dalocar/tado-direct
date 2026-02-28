@@ -37,7 +37,7 @@ TADO_HVAC_ACTION_TO_HA_HVAC_ACTION = {
 CONF_FALLBACK = "fallback"
 CONF_HOME_ID = "home_id"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_USE_LEGACY_AUTH = "use_legacy_auth"
+CONF_AUTH_CLIENT_ID = "auth_client_id"
 DATA = "data"
 
 # Weather

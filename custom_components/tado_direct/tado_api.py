@@ -17,9 +17,15 @@ _LOGGER = logging.getLogger(__name__)
 # OAuth2 Configuration
 OAUTH_BASE_URL = "https://login.tado.com"
 API_BASE_URL = "https://my.tado.com/api/v2"
-# Device authorization client (same as PyTado — supports device code grant)
-CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46"
-SCOPE = "offline_access"
+
+# Tado webapp client (first-party, may support device code grant)
+WEBAPP_CLIENT_ID = "af44f89e-ae86-4ebe-905f-6bf759cf6473"
+WEBAPP_SCOPE = "home.user offline_access"
+
+# PyTado device authorization client (fallback, known to work)
+PYTADO_CLIENT_ID = "1bb50063-6b0c-4d11-bd99-387f4a91cc46"
+PYTADO_SCOPE = "offline_access"
+
 DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 # Token refresh buffer (refresh 30s before expiry)
@@ -330,6 +336,7 @@ class TadoDirectAPI:
         self._user_code: str | None = None
         self._verification_uri: str | None = None
         self._device_poll_interval: int = 5
+        self._auth_client_id: str = WEBAPP_CLIENT_ID  # set during device auth
 
     @property
     def refresh_token(self) -> str | None:
@@ -355,27 +362,46 @@ class TadoDirectAPI:
 
     # --- Device Authorization Flow ---
 
+    async def _try_device_authorize(
+        self, client_id: str, scope: str
+    ) -> dict[str, Any] | None:
+        """Try device authorization with a specific client. Returns result or None."""
+        session = await self._ensure_session()
+        data = {"client_id": client_id, "scope": scope}
+
+        async with session.post(
+            f"{OAUTH_BASE_URL}/oauth2/device_authorize", data=data
+        ) as resp:
+            if resp.status == 200:
+                return await resp.json()
+            text = await resp.text()
+            _LOGGER.debug(
+                "Device auth with client %s failed (%s): %s",
+                client_id, resp.status, text,
+            )
+            return None
+
     async def start_device_authorization(self) -> dict[str, str]:
         """Initiate the OAuth2 device authorization flow.
 
+        Tries the Tado webapp client first (first-party), falls back to
+        the PyTado device client.
+
         Returns dict with 'verification_uri_complete' and 'user_code'.
         """
-        session = await self._ensure_session()
-        data = {
-            "client_id": CLIENT_ID,
-            "scope": SCOPE,
-        }
-
-        async with session.post(
-            f"{OAUTH_BASE_URL}/oauth2/device_authorize",
-            data=data,
-        ) as resp:
-            if resp.status != 200:
-                text = await resp.text()
-                raise TadoAuthError(
-                    f"Device authorization failed ({resp.status}): {text}"
-                )
-            result = await resp.json()
+        # Try webapp client first
+        result = await self._try_device_authorize(WEBAPP_CLIENT_ID, WEBAPP_SCOPE)
+        if result:
+            self._auth_client_id = WEBAPP_CLIENT_ID
+            _LOGGER.info("Using Tado webapp client for device authorization")
+        else:
+            # Fallback to PyTado client
+            result = await self._try_device_authorize(PYTADO_CLIENT_ID, PYTADO_SCOPE)
+            if result:
+                self._auth_client_id = PYTADO_CLIENT_ID
+                _LOGGER.info("Using PyTado client for device authorization")
+            else:
+                raise TadoAuthError("Device authorization failed with all clients")
 
         self._device_code = result["device_code"]
         self._user_code = result["user_code"]
@@ -399,7 +425,7 @@ class TadoDirectAPI:
 
         session = await self._ensure_session()
         data = {
-            "client_id": CLIENT_ID,
+            "client_id": self._auth_client_id,
             "device_code": self._device_code,
             "grant_type": DEVICE_GRANT_TYPE,
         }
@@ -439,7 +465,7 @@ class TadoDirectAPI:
 
         session = await self._ensure_session()
         data = {
-            "client_id": CLIENT_ID,
+            "client_id": self._auth_client_id,
             "grant_type": "refresh_token",
             "refresh_token": self._refresh_token,
         }

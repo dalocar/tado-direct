@@ -17,6 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
+    CONF_AUTH_CLIENT_ID,
     CONF_FALLBACK,
     CONF_REFRESH_TOKEN,
     CONST_OVERLAY_MANUAL,
@@ -69,6 +70,9 @@ async def async_setup_entry(
         session=session,
         refresh_token=entry.data[CONF_REFRESH_TOKEN],
     )
+    # Restore the auth client ID used during setup (for token refresh)
+    if CONF_AUTH_CLIENT_ID in entry.data:
+        tado._auth_client_id = entry.data[CONF_AUTH_CLIENT_ID]
 
     try:
         # Validate the refresh token by attempting to get user info
