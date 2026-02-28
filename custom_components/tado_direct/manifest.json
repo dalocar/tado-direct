@@ -1,0 +1,11 @@
+{
+  "domain": "tado_direct",
+  "name": "Tado Direct",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "1.0.0"
+}
