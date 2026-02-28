@@ -14,7 +14,7 @@
     "step": {
       "user": {
         "title": "Authenticate with Tado",
-        "description": "To authenticate with Tado:\n1. Open [this link]({auth_url}) in your browser\n2. Log in with your Tado account\n3. After login, your browser will show an error page (it cannot open the `tado://` URL)\n4. Copy the **full URL** from your browser's address bar\n5. Paste it below and click Submit",
+        "description": "To authenticate with Tado:\n1. Copy and open this URL in your browser:\n{auth_url}\n2. Log in with your Tado account\n3. After login, your browser will show an error page (it cannot open the tado:// URL)\n4. Copy the full URL from your browser address bar (starts with tado://)\n5. Paste it below and click Submit",
         "data": {
           "redirect_url": "Redirect URL"
         }
