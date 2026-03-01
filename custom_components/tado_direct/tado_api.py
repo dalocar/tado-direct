@@ -814,8 +814,18 @@ class TadoDirectAPI:
         binary_sensor.py, etc.) to work unchanged with Tado X data.
         The webapp does the same mapping in mapApiRoomToRoom().
         """
+        setting = dict(room.get("setting", {}))
+        setting_temp = setting.get("temperature")
+
+        # Hops API doesn't include "power" or "type" in setting.
+        # Derive them: if temperature exists → power ON, otherwise OFF.
+        if "power" not in setting:
+            setting["power"] = "ON" if setting_temp else "OFF"
+        if "type" not in setting:
+            setting["type"] = "HEATING"
+
         state: dict[str, Any] = {
-            "setting": dict(room.get("setting", {})),
+            "setting": setting,
             "link": {
                 "state": "ONLINE"
                 if room.get("connection", {}).get("state") == "CONNECTED"
@@ -829,7 +839,6 @@ class TadoDirectAPI:
         }
 
         # Normalize temperature fields: value → celsius
-        setting_temp = state["setting"].get("temperature")
         if setting_temp and "value" in setting_temp and "celsius" not in setting_temp:
             setting_temp["celsius"] = setting_temp["value"]
 

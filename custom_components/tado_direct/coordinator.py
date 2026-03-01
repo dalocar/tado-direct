@@ -229,8 +229,15 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         mapped_zones: dict[int, TadoZone] = {}
         for room in rooms:
             room_id = room["id"]
-            _LOGGER.debug("Updating Tado X room %s (%s)", room_id, room.get("name"))
+            _LOGGER.debug(
+                "Updating Tado X room %s (%s): raw setting=%s",
+                room_id, room.get("name"), room.get("setting"),
+            )
             normalized = TadoDirectAPI.normalize_hops_room(room)
+            _LOGGER.debug(
+                "Room %s normalized: setting=%s, overlay=%s",
+                room_id, normalized.get("setting"), normalized.get("overlay"),
+            )
             mapped_zones[room_id] = TadoZone(normalized)
 
         return mapped_zones
