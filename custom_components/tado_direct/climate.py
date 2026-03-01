@@ -140,6 +140,13 @@ async def _generate_entities(
                     tado, zone["name"], zone["id"]
                 )
             else:
+                if not zone.get("devices"):
+                    _LOGGER.warning(
+                        "Zone '%s' (id=%s) has no devices, skipping",
+                        zone["name"],
+                        zone["id"],
+                    )
+                    continue
                 entity = await create_climate_entity(
                     tado, zone["name"], zone["id"], zone["devices"][0]
                 )
