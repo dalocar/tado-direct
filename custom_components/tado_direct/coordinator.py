@@ -252,8 +252,15 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
             _LOGGER.error("Error updating Tado zone %s: %s", zone_id, err)
             raise UpdateFailed(f"Error updating Tado zone {zone_id}: {err}") from err
 
+        _LOGGER.debug(
+            "Zone %s raw state: setting=%s, overlay=%s",
+            zone_id, data.get("setting"), data.get("overlay"),
+        )
         zone = TadoZone(data, self._default_overlays.get(zone_id, {}))
-        _LOGGER.debug("Zone %s updated", zone_id)
+        _LOGGER.debug(
+            "Zone %s parsed: hvac_mode=%s, target_temp=%s, current_temp=%s",
+            zone_id, zone.current_hvac_mode, zone.target_temp, zone.current_temp,
+        )
         return zone
 
     async def _async_update_home(self) -> dict[str, dict]:
