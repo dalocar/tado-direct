@@ -226,6 +226,11 @@ HA_TERMINATION_DURATION = "default_overlay_seconds"
 
 TADO_DEFAULT_MIN_TEMP = 5
 TADO_DEFAULT_MAX_TEMP = 40
+
+# Tado X heating defaults (no capabilities endpoint available)
+TADO_X_HEATING_MIN_TEMP = 5
+TADO_X_HEATING_MAX_TEMP = 25
+TADO_X_HEATING_STEP = 0.5
 # Constants for service calls
 SERVICE_ADD_METER_READING = "add_meter_reading"
 CONF_CONFIG_ENTRY = "config_entry"

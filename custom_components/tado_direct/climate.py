@@ -65,6 +65,9 @@ from .const import (
     TADO_TO_HA_OFFSET_MAP,
     TADO_TO_HA_SWING_MODE_MAP,
     TADO_VERTICAL_SWING_SETTING,
+    TADO_X_HEATING_MAX_TEMP,
+    TADO_X_HEATING_MIN_TEMP,
+    TADO_X_HEATING_STEP,
     TEMP_OFFSET,
     TYPE_AIR_CONDITIONING,
     TYPE_HEATING,
@@ -132,12 +135,51 @@ async def _generate_entities(
     entities = []
     for zone in tado.zones:
         if zone["type"] in [TYPE_HEATING, TYPE_AIR_CONDITIONING]:
-            entity = await create_climate_entity(
-                tado, zone["name"], zone["id"], zone["devices"][0]
-            )
+            if tado.is_tado_x:
+                entity = create_climate_entity_tado_x(
+                    tado, zone["name"], zone["id"]
+                )
+            else:
+                entity = await create_climate_entity(
+                    tado, zone["name"], zone["id"], zone["devices"][0]
+                )
             if entity:
                 entities.append(entity)
     return entities
+
+
+def create_climate_entity_tado_x(
+    tado: TadoDirectDataUpdateCoordinator,
+    name: str,
+    zone_id: int,
+) -> TadoDirectClimate:
+    """Create a climate entity for a Tado X room (no capabilities API call needed)."""
+    support_flags = (
+        ClimateEntityFeature.PRESET_MODE
+        | ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.TURN_ON
+    )
+    supported_hvac_modes = [
+        TADO_TO_HA_HVAC_MODE_MAP[CONST_MODE_OFF],
+        TADO_TO_HA_HVAC_MODE_MAP[CONST_MODE_SMART_SCHEDULE],
+        HVACMode.HEAT,
+    ]
+
+    return TadoDirectClimate(
+        tado,
+        name,
+        zone_id,
+        TYPE_HEATING,
+        supported_hvac_modes,
+        support_flags,
+        None,
+        {},
+        False,
+        heat_min_temp=TADO_X_HEATING_MIN_TEMP,
+        heat_max_temp=TADO_X_HEATING_MAX_TEMP,
+        heat_step=TADO_X_HEATING_STEP,
+    )
 
 
 async def create_climate_entity(
@@ -287,7 +329,7 @@ class TadoDirectClimate(TadoDirectZoneEntity, ClimateEntity):
         zone_type: str,
         supported_hvac_modes: list[HVACMode],
         support_flags: ClimateEntityFeature,
-        device_info: dict[str, str],
+        device_info: dict[str, str] | None,
         capabilities: dict[str, str],
         auto_geofencing_supported: bool,
         heat_min_temp: float | None = None,
@@ -309,7 +351,7 @@ class TadoDirectClimate(TadoDirectZoneEntity, ClimateEntity):
         self._attr_unique_id = f"{zone_type} {zone_id} {coordinator.home_id}"
 
         self._device_info = device_info
-        self._device_id = self._device_info["shortSerialNo"]
+        self._device_id = device_info["shortSerialNo"] if device_info else None
 
         self._ac_device = zone_type == TYPE_AIR_CONDITIONING
         self._attr_hvac_modes = supported_hvac_modes
@@ -361,16 +403,17 @@ class TadoDirectClimate(TadoDirectZoneEntity, ClimateEntity):
         self._tado_zone_data = self._tado.data["zone"][self.zone_id]
 
         # Assign offset values to mapped attributes
-        for offset_key, attr in TADO_TO_HA_OFFSET_MAP.items():
-            if (
-                self._device_id in self._tado.data["device"]
-                and TEMP_OFFSET in self._tado.data["device"][self._device_id]
-                and offset_key
-                in self._tado.data["device"][self._device_id][TEMP_OFFSET]
-            ):
-                self._tado_zone_temp_offset[attr] = self._tado.data["device"][
-                    self._device_id
-                ][TEMP_OFFSET][offset_key]
+        if self._device_id is not None:
+            for offset_key, attr in TADO_TO_HA_OFFSET_MAP.items():
+                if (
+                    self._device_id in self._tado.data["device"]
+                    and TEMP_OFFSET in self._tado.data["device"][self._device_id]
+                    and offset_key
+                    in self._tado.data["device"][self._device_id][TEMP_OFFSET]
+                ):
+                    self._tado_zone_temp_offset[attr] = self._tado.data["device"][
+                        self._device_id
+                    ][TEMP_OFFSET][offset_key]
 
         self._current_tado_hvac_mode = self._tado_zone_data.current_hvac_mode
         self._current_tado_hvac_action = self._tado_zone_data.current_hvac_action
@@ -493,6 +536,9 @@ class TadoDirectClimate(TadoDirectZoneEntity, ClimateEntity):
 
     async def set_temp_offset(self, offset: float) -> None:
         """Set offset on the entity."""
+
+        if self._device_id is None:
+            return  # Tado X doesn't support per-device temp offset
 
         _LOGGER.debug(
             "Setting temperature offset for device %s setting to (%.1f)",

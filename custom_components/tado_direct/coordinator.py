@@ -80,6 +80,11 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         """Return fallback flag to Smart Schedule."""
         return self._fallback
 
+    @property
+    def is_tado_x(self) -> bool:
+        """Return whether this is a Tado X home."""
+        return self._is_tado_x
+
     async def _async_update_data(self) -> dict[str, dict]:
         """Fetch the latest data from Tado."""
 
