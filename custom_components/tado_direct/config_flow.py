@@ -28,7 +28,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import TadoDirectConfigEntry
-from .tado_api import TadoAuthError, TadoDirectAPI
+from .tado_api import TadoApiError, TadoAuthError, TadoDirectAPI
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,7 +116,11 @@ class TadoDirectConfigFlow(ConfigFlow, domain=DOMAIN):
         """Handle the finalization of login."""
         _LOGGER.debug("Finalizing login")
         assert self.tado is not None
-        tado_me = await self.tado.get_me()
+        try:
+            tado_me = await self.tado.get_me()
+        except TadoApiError as err:
+            _LOGGER.error("Failed to fetch account info: %s", err)
+            return self.async_abort(reason="cannot_connect")
 
         if "homes" not in tado_me or len(tado_me["homes"]) == 0:
             return self.async_abort(reason="no_homes")

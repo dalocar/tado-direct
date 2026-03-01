@@ -6,6 +6,7 @@ bypassing 3rd-party rate limits imposed on the python-tado library.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -512,6 +513,7 @@ class TadoDirectAPI:
         url: str,
         json_data: dict | None = None,
         retry_on_401: bool = True,
+        _rate_limit_attempt: int = 0,
     ) -> Any:
         """Make an authenticated API request."""
         session = await self._ensure_session()
@@ -531,6 +533,21 @@ class TadoDirectAPI:
                     self._access_token = None
                     return await self._request(
                         method, url, json_data, retry_on_401=False
+                    )
+
+                if resp.status == 429 and _rate_limit_attempt < 3:
+                    retry_after = int(resp.headers.get("Retry-After", 1))
+                    delay = max(retry_after, 2 ** _rate_limit_attempt)
+                    _LOGGER.debug(
+                        "Rate limited (429), retrying in %ss (attempt %s/3)",
+                        delay,
+                        _rate_limit_attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    return await self._request(
+                        method, url, json_data,
+                        retry_on_401=retry_on_401,
+                        _rate_limit_attempt=_rate_limit_attempt + 1,
                     )
 
                 if resp.status == 204:
