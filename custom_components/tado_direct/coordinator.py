@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_FALLBACK,
+    CONF_IS_TADO_X,
     CONF_REFRESH_TOKEN,
     CONST_OVERLAY_TADO_DEFAULT,
     DOMAIN,
@@ -60,6 +61,7 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         self._fallback = config_entry.options.get(
             CONF_FALLBACK, CONST_OVERLAY_TADO_DEFAULT
         )
+        self._is_tado_x: bool = config_entry.data.get(CONF_IS_TADO_X, False)
 
         self.home_id: int
         self.home_name: str
@@ -84,9 +86,19 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         try:
             _LOGGER.debug("Preloading home data")
             tado_home_call = await self._tado.get_me()
-            _LOGGER.debug("Preloading zones and devices")
-            self.zones = await self._tado.get_zones()
-            self.devices = await self._tado.get_devices()
+
+            if self._is_tado_x:
+                _LOGGER.debug("Preloading rooms (Tado X)")
+                rooms = await self._tado.get_rooms()
+                self.zones = [
+                    {"id": r["id"], "name": r["name"], "type": "HEATING", "devices": []}
+                    for r in rooms
+                ]
+                self.devices = []
+            else:
+                _LOGGER.debug("Preloading zones and devices (v2)")
+                self.zones = await self._tado.get_zones()
+                self.devices = await self._tado.get_devices()
         except (TadoApiError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"Error during Tado setup: {err}") from err
 
@@ -94,8 +106,9 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         self.home_id = tado_home["id"]
         self.home_name = tado_home["name"]
 
-        # Fetch default overlays for each zone (cached after first call)
-        await self._async_fetch_default_overlays()
+        # Fetch default overlays for each zone (not available for Tado X)
+        if not self._is_tado_x:
+            await self._async_fetch_default_overlays()
 
         devices = await self._async_update_devices()
         zones = await self._async_update_zones()
@@ -139,6 +152,11 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     async def _async_update_devices(self) -> dict[str, dict]:
         """Update the device data from Tado."""
 
+        if self._is_tado_x:
+            # Tado X homes return empty from v2 /devices endpoint;
+            # actionable devices have a different structure we don't need here
+            return {}
+
         try:
             devices = await self._tado.get_devices()
         except (TadoApiError, aiohttp.ClientError) as err:
@@ -177,6 +195,9 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
     async def _async_update_zones(self) -> dict[int, TadoZone]:
         """Update the zone data from Tado."""
 
+        if self._is_tado_x:
+            return await self._async_update_rooms()
+
         try:
             zone_states_call = await self._tado.get_zone_states()
             zone_states = zone_states_call["zoneStates"]
@@ -188,6 +209,24 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         for zone_id_str in zone_states:
             zone_id = int(zone_id_str)
             mapped_zones[zone_id] = await self._update_zone(zone_id)
+
+        return mapped_zones
+
+    async def _async_update_rooms(self) -> dict[int, TadoZone]:
+        """Update room data from hops API (Tado X) and normalize to TadoZone."""
+
+        try:
+            rooms = await self._tado.get_rooms()
+        except (TadoApiError, aiohttp.ClientError) as err:
+            _LOGGER.error("Error updating Tado X rooms: %s", err)
+            raise UpdateFailed(f"Error updating Tado X rooms: {err}") from err
+
+        mapped_zones: dict[int, TadoZone] = {}
+        for room in rooms:
+            room_id = room["id"]
+            _LOGGER.debug("Updating Tado X room %s (%s)", room_id, room.get("name"))
+            normalized = TadoDirectAPI.normalize_hops_room(room)
+            mapped_zones[room_id] = TadoZone(normalized)
 
         return mapped_zones
 
@@ -237,8 +276,18 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         """Reset the zone back to the default operation."""
 
         try:
-            await self._tado.reset_zone_overlay(zone_id)
-            self.data["zone"][zone_id] = await self._update_zone(zone_id)
+            if self._is_tado_x:
+                await self._tado.reset_room_overlay(zone_id)
+                # Refresh room data after reset
+                rooms = await self._tado.get_rooms()
+                for room in rooms:
+                    if room["id"] == zone_id:
+                        normalized = TadoDirectAPI.normalize_hops_room(room)
+                        self.data["zone"][zone_id] = TadoZone(normalized)
+                        break
+            else:
+                await self._tado.reset_zone_overlay(zone_id)
+                self.data["zone"][zone_id] = await self._update_zone(zone_id)
         except (TadoApiError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"Error resetting Tado data: {err}") from err
 
@@ -287,41 +336,68 @@ class TadoDirectDataUpdateCoordinator(DataUpdateCoordinator[dict[str, dict]]):
         )
 
         try:
-            await self._tado.set_zone_overlay(
-                zone_id,
-                overlay_mode,
-                temperature,
-                duration,
-                device_type,
-                "ON",
-                mode,
-                fan_speed,
-                swing,
-                fan_level,
-                vertical_swing,
-                horizontal_swing,
-            )
+            if self._is_tado_x:
+                await self._tado.set_room_overlay(
+                    zone_id,
+                    power="ON",
+                    temperature=temperature,
+                    termination_type=overlay_mode or "MANUAL",
+                    duration=duration,
+                )
+                # Refresh room data after setting overlay
+                rooms = await self._tado.get_rooms()
+                for room in rooms:
+                    if room["id"] == zone_id:
+                        normalized = TadoDirectAPI.normalize_hops_room(room)
+                        self.data["zone"][zone_id] = TadoZone(normalized)
+                        break
+            else:
+                await self._tado.set_zone_overlay(
+                    zone_id,
+                    overlay_mode,
+                    temperature,
+                    duration,
+                    device_type,
+                    "ON",
+                    mode,
+                    fan_speed,
+                    swing,
+                    fan_level,
+                    vertical_swing,
+                    horizontal_swing,
+                )
+                self.data["zone"][zone_id] = await self._update_zone(zone_id)
 
         except (TadoApiError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"Error setting Tado overlay: {err}") from err
-
-        self.data["zone"][zone_id] = await self._update_zone(zone_id)
 
     async def set_zone_off(self, zone_id, overlay_mode, device_type="HEATING"):
         """Set a zone to off."""
         try:
-            await self._tado.set_zone_overlay(
-                zone_id,
-                overlay_mode,
-                None,
-                None,
-                device_type,
-                "OFF",
-            )
+            if self._is_tado_x:
+                await self._tado.set_room_overlay(
+                    zone_id,
+                    power="OFF",
+                    termination_type=overlay_mode or "MANUAL",
+                )
+                rooms = await self._tado.get_rooms()
+                for room in rooms:
+                    if room["id"] == zone_id:
+                        normalized = TadoDirectAPI.normalize_hops_room(room)
+                        self.data["zone"][zone_id] = TadoZone(normalized)
+                        break
+            else:
+                await self._tado.set_zone_overlay(
+                    zone_id,
+                    overlay_mode,
+                    None,
+                    None,
+                    device_type,
+                    "OFF",
+                )
+                self.data["zone"][zone_id] = await self._update_zone(zone_id)
         except (TadoApiError, aiohttp.ClientError) as err:
             raise UpdateFailed(f"Error setting Tado overlay: {err}") from err
-
-        self.data["zone"][zone_id] = await self._update_zone(zone_id)
 
     async def set_temperature_offset(self, device_id, offset):
         """Set temperature offset of device."""

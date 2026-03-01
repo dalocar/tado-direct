@@ -17,6 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 # OAuth2 Configuration
 OAUTH_BASE_URL = "https://login.tado.com"
 API_BASE_URL = "https://my.tado.com/api/v2"
+HOPS_API_BASE_URL = "https://hops.tado.com"
 
 # Tado webapp client (first-party, may support device code grant)
 WEBAPP_CLIENT_ID = "af44f89e-ae86-4ebe-905f-6bf759cf6473"
@@ -330,6 +331,7 @@ class TadoDirectAPI:
         self._token_expiry: float = 0
         self._home_id: int | None = None
         self._auto_geofencing_supported: bool = False
+        self._is_tado_x: bool = False
 
         # Device authorization flow state
         self._device_code: str | None = None
@@ -347,6 +349,11 @@ class TadoDirectAPI:
     def home_id(self) -> int | None:
         """Return cached home ID."""
         return self._home_id
+
+    @property
+    def is_tado_x(self) -> bool:
+        """Return whether this home uses Tado X (hops API)."""
+        return self._is_tado_x
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure we have an active session."""
@@ -540,10 +547,16 @@ class TadoDirectAPI:
             raise TadoConnectionError(f"Connection error: {err}") from err
 
     def _home_url(self, path: str = "") -> str:
-        """Build a URL for the home API."""
+        """Build a URL for the v2 home API."""
         if self._home_id is None:
             raise TadoApiError("Home ID not set. Call get_me() first.")
         return f"{API_BASE_URL}/homes/{self._home_id}/{path}" if path else f"{API_BASE_URL}/homes/{self._home_id}"
+
+    def _hops_home_url(self, path: str = "") -> str:
+        """Build a URL for the hops (Tado X) home API."""
+        if self._home_id is None:
+            raise TadoApiError("Home ID not set. Call get_me() first.")
+        return f"{HOPS_API_BASE_URL}/homes/{self._home_id}/{path}" if path else f"{HOPS_API_BASE_URL}/homes/{self._home_id}"
 
     # --- API Methods ---
 
@@ -717,3 +730,132 @@ class TadoDirectAPI:
             self._home_url("meterReadings"),
             json_data={"date": date, "reading": reading},
         )
+
+    # --- Tado X (hops) API Methods ---
+
+    async def detect_tado_x(self) -> bool:
+        """Detect if this home uses Tado X (hops API).
+
+        Tries to fetch rooms from the hops API. If rooms exist, this is a
+        Tado X home. Result is cached in _is_tado_x.
+        """
+        try:
+            rooms = await self._request("GET", self._hops_home_url("rooms"))
+            if rooms and isinstance(rooms, list) and len(rooms) > 0:
+                self._is_tado_x = True
+                _LOGGER.info("Tado X detected for home %s", self._home_id)
+                return True
+        except TadoApiError:
+            pass
+        _LOGGER.debug("Home %s is not Tado X (using v2 API)", self._home_id)
+        return False
+
+    async def get_rooms(self) -> list[dict[str, Any]]:
+        """Get all rooms from hops API (Tado X)."""
+        return await self._request("GET", self._hops_home_url("rooms"))
+
+    async def get_actionable_devices(self) -> list[dict[str, Any]]:
+        """Get devices from hops API (Tado X)."""
+        return await self._request("GET", self._hops_home_url("actionableDevices"))
+
+    async def set_room_overlay(
+        self,
+        room_id: int,
+        power: str = "ON",
+        temperature: float | None = None,
+        termination_type: str = "MANUAL",
+        duration: int | None = None,
+    ) -> dict[str, Any]:
+        """Set manual control on a Tado X room."""
+        payload: dict[str, Any] = {
+            "setting": {"power": power},
+            "termination": {"type": termination_type},
+        }
+        if temperature is not None:
+            payload["setting"]["temperature"] = {"value": temperature}
+        if duration is not None:
+            payload["termination"]["durationInSeconds"] = duration
+        return await self._request(
+            "POST",
+            self._hops_home_url(f"rooms/{room_id}/manualControl"),
+            json_data=payload,
+        )
+
+    async def reset_room_overlay(self, room_id: int) -> dict[str, Any]:
+        """Resume schedule for a Tado X room."""
+        return await self._request(
+            "POST",
+            self._hops_home_url(f"rooms/{room_id}/resumeSchedule"),
+            json_data={},
+        )
+
+    @staticmethod
+    def normalize_hops_room(room: dict) -> dict:
+        """Convert a hops room response to v2-compatible zone state format.
+
+        This normalization allows all existing entity code (climate.py, sensor.py,
+        binary_sensor.py, etc.) to work unchanged with Tado X data.
+        The webapp does the same mapping in mapApiRoomToRoom().
+        """
+        state: dict[str, Any] = {
+            "setting": dict(room.get("setting", {})),
+            "link": {
+                "state": "ONLINE"
+                if room.get("connection", {}).get("state") == "CONNECTED"
+                else "OFFLINE"
+            },
+            "sensorDataPoints": dict(room.get("sensorDataPoints", {})),
+            "activityDataPoints": {
+                "heatingPower": room.get("heatingPower", {"percentage": 0}),
+            },
+            "tadoMode": "AWAY" if room.get("awayMode") else "HOME",
+        }
+
+        # Normalize temperature fields: value → celsius
+        setting_temp = state["setting"].get("temperature")
+        if setting_temp and "value" in setting_temp and "celsius" not in setting_temp:
+            setting_temp["celsius"] = setting_temp["value"]
+
+        inside = state["sensorDataPoints"].get("insideTemperature")
+        if inside and "celsius" not in inside and "value" in inside:
+            inside["celsius"] = inside["value"]
+
+        # Build overlay from manualControlTermination or boostMode
+        mct = room.get("manualControlTermination")
+        boost = room.get("boostMode")
+        if mct:
+            state["overlay"] = {
+                "setting": state["setting"],
+                "termination": {
+                    "typeSkillBasedApp": mct.get("type"),
+                    "durationInSeconds": mct.get("durationInSeconds"),
+                },
+            }
+        elif boost:
+            state["overlay"] = {
+                "setting": {
+                    "power": "ON",
+                    "temperature": state["setting"].get("temperature"),
+                },
+                "termination": {
+                    "typeSkillBasedApp": boost.get("type"),
+                    "durationInSeconds": boost.get("durationInSeconds"),
+                },
+            }
+
+        # Open window
+        ow = room.get("openWindow")
+        if ow:
+            if ow.get("activated"):
+                state["openWindow"] = {
+                    "remainingTimeInSeconds": ow.get("expiryInSeconds"),
+                }
+            else:
+                state["openWindowDetected"] = True
+
+        # Preparation (early start / preheating)
+        away_mode = room.get("awayMode")
+        if away_mode and isinstance(away_mode, dict) and away_mode.get("preheating"):
+            state["preparation"] = True
+
+        return state

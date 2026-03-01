@@ -38,6 +38,7 @@ CONF_FALLBACK = "fallback"
 CONF_HOME_ID = "home_id"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_AUTH_CLIENT_ID = "auth_client_id"
+CONF_IS_TADO_X = "is_tado_x"
 DATA = "data"
 
 # Weather

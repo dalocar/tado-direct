@@ -19,6 +19,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     CONF_AUTH_CLIENT_ID,
     CONF_FALLBACK,
+    CONF_IS_TADO_X,
     CONF_REFRESH_TOKEN,
     CONST_OVERLAY_MANUAL,
     CONST_OVERLAY_TADO_DEFAULT,
@@ -97,32 +98,42 @@ async def async_setup_entry(
 
     _LOGGER.debug("Tado Direct connection established")
 
+    # Detect Tado X (hops API) if not already known
+    updated_data = dict(entry.data)
+    if CONF_IS_TADO_X not in updated_data:
+        is_tado_x = await tado.detect_tado_x()
+        updated_data[CONF_IS_TADO_X] = is_tado_x
+    elif updated_data[CONF_IS_TADO_X]:
+        tado._is_tado_x = True
+
     # Persist updated refresh token if it was rotated during auth
     new_refresh_token = tado.get_refresh_token()
     if new_refresh_token and new_refresh_token != stored_refresh_token:
         _LOGGER.debug("Refresh token was rotated, updating config entry")
-        hass.config_entries.async_update_entry(
-            entry,
-            data={**entry.data, CONF_REFRESH_TOKEN: new_refresh_token},
-        )
+        updated_data[CONF_REFRESH_TOKEN] = new_refresh_token
+
+    if updated_data != dict(entry.data):
+        hass.config_entries.async_update_entry(entry, data=updated_data)
 
     coordinator = TadoDirectDataUpdateCoordinator(hass, entry, tado)
     await coordinator.async_config_entry_first_refresh()
 
     # Pre-register the bridge device to ensure it exists before other devices reference it
-    device_registry = dr.async_get(hass)
-    for device in coordinator.data["device"].values():
-        if device["deviceType"] in TADO_BRIDGE_MODELS:
-            _LOGGER.debug("Pre-registering Tado bridge: %s", device["shortSerialNo"])
-            device_registry.async_get_or_create(
-                config_entry_id=entry.entry_id,
-                identifiers={(DOMAIN, device["shortSerialNo"])},
-                manufacturer="Tado",
-                model=device["deviceType"],
-                name=device["serialNo"],
-                sw_version=device["currentFwVersion"],
-                configuration_url=f"https://app.tado.com/en/main/settings/rooms-and-devices/device/{device['serialNo']}",
-            )
+    # (Tado X homes don't have v2 device data)
+    if coordinator.data["device"]:
+        device_registry = dr.async_get(hass)
+        for device in coordinator.data["device"].values():
+            if device["deviceType"] in TADO_BRIDGE_MODELS:
+                _LOGGER.debug("Pre-registering Tado bridge: %s", device["shortSerialNo"])
+                device_registry.async_get_or_create(
+                    config_entry_id=entry.entry_id,
+                    identifiers={(DOMAIN, device["shortSerialNo"])},
+                    manufacturer="Tado",
+                    model=device["deviceType"],
+                    name=device["serialNo"],
+                    sw_version=device["currentFwVersion"],
+                    configuration_url=f"https://app.tado.com/en/main/settings/rooms-and-devices/device/{device['serialNo']}",
+                )
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
